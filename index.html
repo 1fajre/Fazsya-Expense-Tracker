@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Keuangan Keluarga</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & React DOM -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <!-- Babel -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Supabase Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-slate-100 text-slate-800 font-sans">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // Ganti dengan URL dan Anon Key dari Supabase Anda
+    const SUPABASE_URL = 'https://iqbwkjjwluidtfpvmpzo.supabase.co'; 
+    const SUPABASE_ANON_KEY = 'sb_publishable_Z6-5TcJ-yf_XtvPztRjGXg_vsJxxqaD'; // Tempel anon key Anda di sini
+
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const categories = ['Semua Kategori', 'Belanja Dapur', 'Tagihan', 'Pendidikan', 'Kesehatan', 'Hiburan', 'Lain-lain'];
+    const targets = ['Semua Anggota', 'Rumah/Umum', 'Ayah', 'Ibu', 'Anak 1', 'Anak 2'];
+
+    function App() {
+      // Halaman yang aktif: 'viewer' | 'login' | 'dashboard'
+      const [currentPage, setCurrentPage] = useState('viewer'); 
+      const [currentUserRole, setCurrentUserRole] = useState(null); // 'admin' | 'superadmin' | null
+      const [currentUserName, setCurrentUserName] = useState(''); // Nama Admin/User yang sedang aktif
+
+      const [pinInput, setPinInput] = useState('');
+      const [loginError, setLoginError] = useState('');
+
+      const [transactions, setTransactions] = useState([]);
+      const [logs, setLogs] = useState([]); // Untuk log aktivitas CRUD Superadmin
+      const [loading, setLoading] = useState(true);
+
+      // Filter State
+      const [selectedCategory, setSelectedCategory] = useState('Semua Kategori');
+      const [selectedTarget, setSelectedTarget] = useState('Semua Anggota');
+      const [selectedMonth, setSelectedMonth] = useState('2026-09');
+
+      // Form State (Admin Dashboard)
+      const [title, setTitle] = useState('');
+      const [amount, setAmount] = useState('');
+      const [category, setCategory] = useState('Belanja Dapur');
+      const [target, setTarget] = useState('Rumah/Umum');
+      const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+      const [notes, setNotes] = useState('');
+
+      // Fetch Transaksi dari Supabase
+      const fetchTransactions = async () => {
+        setLoading(true);
+        const { data, error } = await supabaseClient
+          .from('transactions')
+          .select('*')
+          .order('date', { ascending: false });
+
+        if (!error && data) {
+          setTransactions(data);
+        }
+        setLoading(false);
+      };
+
+      // Fetch Logs (Khusus Superadmin)
+      const fetchLogs = async () => {
+        const { data, error } = await supabaseClient
+          .from('activity_logs')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (!error && data) {
+          setLogs(data);
+        }
+      };
+
+      useEffect(() => {
+        fetchTransactions();
+      }, []);
+
+      useEffect(() => {
+        if (currentUserRole === 'superadmin') {
+          fetchLogs();
+        }
+      }, [currentUserRole]);
+
+      // Filter Transaksi
+      const filteredTransactions = useMemo(() => {
+        return transactions.filter(t => {
+          const matchMonth = t.date ? String(t.date).startsWith(selectedMonth) : true;
+          const matchCategory = selectedCategory === 'Semua Kategori' || t.category === selectedCategory;
+          const matchTarget = selectedTarget === 'Semua Anggota' || t.target === selectedTarget;
+          return matchMonth && matchCategory && matchTarget;
+        });
+      }, [transactions, selectedMonth, selectedCategory, selectedTarget]);
+
+      const totalExpense = useMemo(() => {
+        return filteredTransactions.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+      }, [filteredTransactions]);
+
+      // Fungsi Login berdasarkan PIN
+      const handleLoginSubmit = (e) => {
+        e.preventDefault();
+        setLoginError('');
+
+        if (pinInput === '1234') {
+          // PIN Admin (Ibu/Bapak)
+          setCurrentUserRole('admin');
+          setCurrentUserName('Admin (Ibu)');
+          setCurrentPage('dashboard');
+          setPinInput('');
+        } else if (pinInput === '9999') {
+          // PIN Superadmin
+          setCurrentUserRole('superadmin');
+          setCurrentUserName('Super Admin');
+          setCurrentPage('dashboard');
+          setPinInput('');
+        } else {
+          setLoginError('PIN yang Anda masukkan salah!');
+        }
+      };
+
+      const handleLogout = () => {
+        setCurrentUserRole(null);
+        setCurrentUserName('');
+        setCurrentPage('viewer');
+      };
+
+      // Catat Log ke Supabase (Jika tabel 'activity_logs' sudah dibuat)
+      const logActivity = async (action, details) => {
+        try {
+          await supabaseClient.from('activity_logs').insert([{
+            user_name: currentUserName,
+            user_role: currentUserRole,
+            action: action, // 'CREATE' | 'DELETE'
+            details: details,
+            created_at: new Date().toISOString()
+          }]);
+        } catch (err) {
+          console.log('Log tidak ter-record:', err);
+        }
+      };
+
+      // Tambah Transaksi
+      const handleAddTransaction = async (e) => {
+        e.preventDefault();
+        if (!title || !amount) return;
+
+        const newEntry = {
+          title: String(title),
+          amount: Number(amount),
+          category: String(category),
+          target: String(target),
+          type: 'expense',
+          date: String(date),
+          notes: notes ? String(notes) : null
+        };
+
+        const { data, error } = await supabaseClient
+          .from('transactions')
+          .insert([newEntry])
+          .select();
+
+        if (error) {
+          alert('Gagal menyimpan: ' + error.message);
+        } else {
+          await logActivity('CREATE', `Menambahkan transaksi "${title}" senilai Rp ${Number(amount).toLocaleString('id-ID')}`);
+          setTitle('');
+          setAmount('');
+          setNotes('');
+          fetchTransactions();
+          if (currentUserRole === 'superadmin') fetchLogs();
+        }
+      };
+
+      // Hapus Transaksi
+      const handleDelete = async (id, itemTitle) => {
+        if (confirm(`Hapus transaksi "${itemTitle}"?`)) {
+          const { error } = await supabaseClient
+            .from('transactions')
+            .delete()
+            .eq('id', id);
+
+          if (error) {
+            alert('Gagal menghapus: ' + error.message);
+          } else {
+            await logActivity('DELETE', `Menghapus transaksi "${itemTitle}" (ID: ${id})`);
+            fetchTransactions();
+            if (currentUserRole === 'superadmin') fetchLogs();
+          }
+        }
+      };
+
+      return (
+        <div className="max-w-md mx-auto min-h-screen bg-white shadow-md flex flex-col">
+          
+          {/* HEADER UTAMA */}
+          <div className="bg-indigo-600 p-4 text-white shadow flex justify-between items-center">
+            <div>
+              <h1 className="text-lg font-bold">Keuangan Keluarga</h1>
+              <p className="text-[11px] text-indigo-200">
+                {currentPage === 'viewer' && 'Halaman Publik (Viewer)'}
+                {currentPage === 'login' && 'Autentikasi Keamanan'}
+                {currentPage === 'dashboard' && `Dashboard: ${currentUserName}`}
+              </p>
+            </div>
+
+            {currentPage === 'viewer' && (
+              <button 
+                onClick={() => setCurrentPage('login')} 
+                className="text-xs bg-indigo-800 hover:bg-indigo-900 px-3 py-1.5 rounded-lg font-semibold border border-indigo-400">
+                🔒 Login Admin
+              </button>
+            )}
+
+            {currentPage === 'login' && (
+              <button 
+                onClick={() => setCurrentPage('viewer')} 
+                className="text-xs bg-indigo-500 hover:bg-indigo-700 px-3 py-1.5 rounded-lg font-semibold">
+                ← Kembali
+              </button>
+            )}
+
+            {currentPage === 'dashboard' && (
+              <button 
+                onClick={handleLogout} 
+                className="text-xs bg-rose-500 hover:bg-rose-600 px-3 py-1.5 rounded-lg font-semibold shadow">
+                Keluar
+              </button>
+            )}
+          </div>
+
+          {/* ==================== 1. HALAMAN LOGIN ==================== */}
+          {currentPage === 'login' && (
+            <div className="p-6 flex-1 flex flex-col justify-center items-center">
+              <div className="w-full max-w-xs bg-slate-50 p-6 rounded-2xl border border-slate-200 shadow-sm text-center">
+                <div className="text-3xl mb-2">🔐</div>
+                <h2 className="text-base font-bold text-slate-800 mb-1">Masukan PIN Akses</h2>
+                <p className="text-xs text-slate-500 mb-4">Masukkan PIN Admin atau Superadmin untuk membuka Dashboard.</p>
+
+                <form onSubmit={handleLoginSubmit} className="space-y-3">
+                  <input 
+                    type="password" 
+                    placeholder="• • • •" 
+                    value={pinInput} 
+                    onChange={(e) => setPinInput(e.target.value)}
+                    className="w-full p-3 border rounded-xl text-center text-lg font-bold tracking-widest bg-white"
+                    maxLength="6"
+                    autoFocus
+                  />
+
+                  {loginError && (
+                    <p className="text-xs text-rose-500 font-medium">{loginError}</p>
+                  )}
+
+                  <button 
+                    type="submit" 
+                    className="w-full py-2.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 shadow">
+                    Masuk ke Dashboard
+                  </button>
+                </form>
+
+                <div className="mt-4 text-[10px] text-slate-400">
+                  <p>PIN Demo: Admin = <b>1234</b> | Superadmin = <b>9999</b></p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ==================== 2. HALAMAN VIEWER & DASHBOARD ==================== */}
+          {(currentPage === 'viewer' || currentPage === 'dashboard') && (
+            <div className="p-4 flex-1 pb-10">
+
+              {/* Banner Superadmin Log Activity */}
+              {currentPage === 'dashboard' && currentUserRole === 'superadmin' && (
+                <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl mb-4">
+                  <div className="flex justify-between items-center mb-2">
+                    <p className="text-xs font-bold text-amber-800">📜 Audit Log Aktivitas CRUD (Superadmin)</p>
+                    <button onClick={fetchLogs} className="text-[10px] text-amber-600 underline">Refresh Log</button>
+                  </div>
+                  <div className="max-h-28 overflow-y-auto space-y-1 text-[11px]">
+                    {logs.length === 0 ? (
+                      <p className="text-amber-600 text-[10px] italic">Belum ada aktivitas tercatat.</p>
+                    ) : (
+                      logs.map(log => (
+                        <div key={log.id} className="bg-white p-1.5 rounded border border-amber-100 flex justify-between">
+                          <span><b>{log.user_name}</b> [{log.action}]: {log.details}</span>
+                          <span className="text-[9px] text-slate-400 ml-2">{new Date(log.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Total Pengeluaran */}
+              <div className="bg-rose-50 border border-rose-100 p-4 rounded-xl mb-4 text-center shadow-sm">
+                <p className="text-xs text-rose-600 font-medium">Total Pengeluaran (Sesuai Filter)</p>
+                <p className="text-2xl font-extrabold text-rose-700 mt-1">
+                  Rp {totalExpense.toLocaleString('id-ID')}
+                </p>
+              </div>
+
+              {/* Form Tambah Transaksi (HANYA MUNCUL DI DASHBOARD ADMIN/SUPERADMIN) */}
+              {currentPage === 'dashboard' && (
+                <form onSubmit={handleAddTransaction} className="bg-indigo-50 border border-indigo-200 p-3.5 rounded-xl mb-5 space-y-2.5 shadow-sm">
+                  <p className="text-xs font-bold text-indigo-700 uppercase">➕ Tambah Transaksi Baru</p>
+                  <input 
+                    type="text" 
+                    placeholder="Nama Transaksi (contoh: Belanja Pasar)" 
+                    value={title} 
+                    onChange={(e) => setTitle(e.target.value)}
+                    className="w-full p-2 text-xs border rounded bg-white"
+                    required
+                  />
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <input 
+                      type="number" 
+                      placeholder="Nominal (Rp)" 
+                      value={amount} 
+                      onChange={(e) => setAmount(e.target.value)}
+                      className="w-full p-2 border rounded bg-white"
+                      required
+                    />
+                    <input 
+                      type="date" 
+                      value={date} 
+                      onChange={(e) => setDate(e.target.value)}
+                      className="w-full p-2 border rounded bg-white"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <select value={category} onChange={(e) => setCategory(e.target.value)} className="p-2 border rounded bg-white">
+                      {categories.filter(c => c !== 'Semua Kategori').map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    <select value={target} onChange={(e) => setTarget(e.target.value)} className="p-2 border rounded bg-white">
+                      {targets.filter(t => t !== 'Semua Anggota').map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <input 
+                    type="text" 
+                    placeholder="Catatan tambahan (Opsional)" 
+                    value={notes} 
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="w-full p-2 text-xs border rounded bg-white"
+                  />
+                  <button type="submit" className="w-full bg-indigo-600 text-white text-xs font-bold py-2 rounded hover:bg-indigo-700">
+                    Simpan Transaksi
+                  </button>
+                </form>
+              )}
+
+              {/* Filter Data */}
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 mb-4 space-y-2">
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Filter Transaksi</p>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div>
+                    <label className="block text-slate-600 mb-1">Bulan</label>
+                    <input 
+                      type="month" 
+                      value={selectedMonth} 
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      className="w-full p-2 border rounded bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-600 mb-1">Untuk Siapa</label>
+                    <select 
+                      value={selectedTarget} 
+                      onChange={(e) => setSelectedTarget(e.target.value)}
+                      className="w-full p-2 border rounded bg-white">
+                      {targets.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="text-xs">
+                  <label className="block text-slate-600 mb-1">Kategori</label>
+                  <select 
+                    value={selectedCategory} 
+                    onChange={(e) => setSelectedCategory(e.target.value)}
+                    className="w-full p-2 border rounded bg-white">
+                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Tabel / Daftar Riwayat Transaksi */}
+              <div className="space-y-2">
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                  Riwayat Pengeluaran ({filteredTransactions.length})
+                </p>
+
+                {loading ? (
+                  <p className="text-xs text-slate-400 text-center py-4">Memuat data...</p>
+                ) : filteredTransactions.length === 0 ? (
+                  <p className="text-xs text-slate-400 text-center py-4">Belum ada transaksi pada filter ini.</p>
+                ) : (
+                  filteredTransactions.map(t => (
+                    <div key={t.id} className="p-3 bg-white border border-slate-200 shadow-sm rounded-xl">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="text-xs font-bold text-slate-800">{t.title}</p>
+                          <div className="flex flex-wrap gap-1 text-[10px] text-slate-500 mt-1">
+                            <span className="bg-slate-100 px-1.5 py-0.5 rounded">{t.date}</span>
+                            <span className="bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">{t.category}</span>
+                            <span className="bg-emerald-50 text-emerald-600 px-1.5 py-0.5 rounded">Untuk: {t.target}</span>
+                          </div>
+                          {t.notes && (
+                            <p className="text-[11px] text-slate-500 mt-1 italic">
+                              💬 "{t.notes}"
+                            </p>
+                          )}
+                        </div>
+                        <div className="text-right">
+                          <p className="text-xs font-bold text-rose-600">
+                            - Rp {Number(t.amount).toLocaleString('id-ID')}
+                          </p>
+
+                          {/* Tombol Hapus hanya muncul di Dashboard Admin/Superadmin */}
+                          {currentPage === 'dashboard' && (
+                            <button 
+                              onClick={() => handleDelete(t.id, t.title)} 
+                              className="text-[10px] text-rose-400 hover:text-rose-600 mt-1 underline block ml-auto">
+                              Hapus
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
